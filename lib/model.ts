@@ -122,7 +122,9 @@ export interface BoardRow {
   farm_steps: string[];
 }
 
-/** The dashboard's compact view of one row, with farm plans generated in the page. */
+/** The dashboard's compact view of one row. The farm plan is carried whole from main.ts:
+ *  data.js is the single source of truth and the page only renders it, so the plan the
+ *  page shows and the plan board.json carries can never drift apart. */
 export interface RadarRow {
   rank: number;
   slug: string;
@@ -140,6 +142,7 @@ export interface RadarRow {
   maturity_multiplier: number;
   chain_multiplier: number;
   why: string;
+  farm_steps: string[];
   watchlist: boolean;
 }
 
@@ -288,8 +291,18 @@ const WRAPPED_WORD = /\b(wrapped|staked|staking)\b/i;
 /** The exchange names the watchlist rule refuses at the start of a protocol's name. */
 const EXCHANGE_NAMES = ['Binance', 'Coinbase', 'Bybit', 'Kraken', 'Bitget', 'OKX', 'Bitfinex', 'Gemini'];
 
-/** The categories the watchlist rule refuses outright. */
-const EXCLUDED_CATEGORIES = new Set(['Bridge', 'Canonical Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC', 'CEX']);
+/** The categories the watchlist rule refuses outright. "Cross Chain Bridge" is a bridge
+ *  by function, the same as Bridge and Canonical Bridge: the house's own watchlist omits
+ *  Circle Gateway, a cross-chain bridge of Circle (USDC), even though it meets every other
+ *  visible condition of the watchlist rule. */
+const EXCLUDED_CATEGORIES = new Set(['Bridge', 'Canonical Bridge', 'Cross Chain Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC', 'CEX']);
+
+/** A staked-token ticker inside a name: "st" followed by an uppercase ticker (stHYPE,
+ *  stETH, stSOL). A restaking vault for such a receipt is a derivative of a derivative:
+ *  the receipt is already a staked product of a token that trades. In this snapshot the
+ *  pattern matches exactly one board row (Valantis stHYPE Restaking) and no watchlist row,
+ *  so the rule is surgical, not a dragnet. */
+const STAKED_TICKER = /\bst[A-Z]{2,}\b/;
 
 /** Whether a protocol records no token at all. */
 export function isPreToken(p: SnapshotProtocol): boolean {
@@ -299,16 +312,18 @@ export function isPreToken(p: SnapshotProtocol): boolean {
 /**
  * Whether a protocol is one the board may rank: pre-token, and not a wrapped, staked or bridged
  * product of a token that already trades. This is the snapshot's own watchlist rule, applied to
- * every row: the category is not an exchange, a bridge or a staking product; the name carries no
- * version marker and no whole word wrapped, staked or staking; and it does not begin with an
- * exchange's name. A protocol the rule refuses is shown in the live view when it already trades,
- * and nowhere on the board when it does not: it is not a launch that has not happened yet.
+ * every row: the category is not an exchange, a bridge (including a cross-chain bridge) or a
+ * staking product; the name carries no version marker, no whole word wrapped, staked or
+ * staking, and no staked-token ticker (stHYPE, stETH); and it does not begin with an exchange's
+ * name. A protocol the rule refuses is shown in the live view when it already trades, and
+ * nowhere on the board when it does not: it is not a launch that has not happened yet.
  */
 export function isRankable(p: SnapshotProtocol): boolean {
   if (!isPreToken(p)) return false;
   if (p.category !== null && EXCLUDED_CATEGORIES.has(p.category)) return false;
   if (VERSIONED.test(p.name)) return false;
   if (WRAPPED_WORD.test(p.name)) return false;
+  if (STAKED_TICKER.test(p.name)) return false;
   if (EXCHANGE_NAMES.some((e) => p.name.startsWith(e))) return false;
   return true;
 }
@@ -492,7 +507,7 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
-/** A board row's compact form for data.js, with the farm plan generated in the page. */
+/** A board row's compact form for data.js, farm plan included whole. */
 export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
   return {
     rank: row.rank,
@@ -511,6 +526,7 @@ export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
     maturity_multiplier: row.model.maturity_multiplier,
     chain_multiplier: row.model.chain_multiplier,
     why: row.why,
+    farm_steps: row.farm_steps,
     watchlist: onWatchlist,
   };
 }

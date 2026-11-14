@@ -7,10 +7,10 @@
 // vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
-// and dashboard/app.js read /output/data.js, which this program writes from the same board. The
-// page recomputes each row's implied value from the snapshot figures, so the number the page
-// shows and the number board.json carries are the same arithmetic, and the farm plan the page
-// shows is the same derivation main.ts writes.
+// and dashboard/app.js read /output/data.js, which this program writes from the same board. data.js
+// is the single source of truth: it carries every row's implied value, model multipliers and full
+// farm plan text, and the page only renders them — it derives nothing, so the number and the plan
+// the page shows are byte-for-byte the ones board.json carries.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
