@@ -1,16 +1,14 @@
-// Token Radar's program (Node 22, standard library only).
+// A working token-radar-01 entry, model radar-3 (Node 22, standard library only).
 //
-// It reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
-// pre-token protocol the watchlist rule keeps with the radar-2 model in lib/model.ts, writes the
-// ranked board to /output/board.json, and copies this repository's dashboard/ and screenshots/
-// to /output. Last, it writes /output/dossier.json, the summary the judge reads, with the
-// vendored make.fun library.
+// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits the
+// radar-3 model on the snapshot's own live-token market, scores every pre-token protocol with it,
+// writes the ranked board to /output/board.json, and copies this repository's dashboard/ and
+// screenshots/ to /output. Last, it writes /output/dossier.json, the summary the judge reads, with
+// the vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
-// and dashboard/app.js read /output/data.js, which this program writes from the same board. data.js
-// is the single source of truth: it carries every row's implied value, model multipliers and full
-// farm plan text, and the page only renders them — it derives nothing, so the number and the plan
-// the page shows are byte-for-byte the ones board.json carries.
+// and dashboard/app.js read /output/data.js, which this program writes from the same board. Change
+// the model, the page or the plan; keep the gate's shape.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -87,7 +85,13 @@ for (const name of shots) {
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
+const fit = radar.fit;
+const verdictCounts = { farm: 0, thin: 0, skip: 0 };
+for (const r of board) verdictCounts[r.verdict]++;
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: radar-3 fit on ${fit.n_calibration} live tokens: intercept ${fit.intercept.toFixed(4)}, slope ${fit.slope.toFixed(4)}, growth ${fit.growth_coef.toFixed(4)} (damped ${fit.growth_coef_damped.toFixed(4)})\n` +
+    `token radar: 5-fold CV n=${fit.cv.n}: median |error| ${(fit.cv.median_abs_error * 100).toFixed(1)}%, Spearman ${fit.cv.spearman.toFixed(3)}, within-2x ${(fit.cv.within_2x * 100).toFixed(1)}%\n` +
+    `token radar: verdicts farm ${verdictCounts.farm} / thin ${verdictCounts.thin} / skip ${verdictCounts.skip}; terciles $${fit.verdict_t1.toLocaleString('en-US')} / $${fit.verdict_t2.toLocaleString('en-US')}; top: ${board.slice(0, 3).map((r) => `${r.slug} $${(r.implied_value_usd / 1e6).toFixed(1)}M`).join(', ')}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
