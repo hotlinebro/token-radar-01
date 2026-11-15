@@ -1,7 +1,11 @@
-// Token Radar's plain dashboard, model radar-3. It reads window.RADAR (written beside dashboard/
-// by main.ts) and renders the ranked board, a filterable table, a per-protocol detail drawer with
-// the model's own inputs, its verdict and the protocol's farm plan. No network: every byte it
-// shows is in data.js.
+// Token Radar's radar-4 dashboard. It reads window.RADAR (written beside dashboard/ by main.ts)
+// and renders the ranked board, a filterable table, a per-protocol detail drawer with the model's
+// own inputs and the protocol's farm plan, and the validation the model earned at run time.
+// No network: every byte it shows is in data.js.
+//
+// The page recomputes a row's implied value from the snapshot figures with impliedOf, the same
+// arithmetic main.ts used, and checks the number board.json carries, so the page's code and the
+// board's data are visibly the same model.
 (function () {
   'use strict';
 
@@ -28,12 +32,21 @@
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
-  // The model in one function: the page recomputes a row from the snapshot figures and checks the
-  // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
+  function fmtNum(n, d) {
+    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
+    return n.toFixed(d === undefined ? 3 : d);
+  }
+  function fmtErr(n) {
+    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
+    return (n * 100).toFixed(1) + '%';
+  }
+  // radar-4 in one function: log(implied) = intercept + slope*log(TVL) + damped*growth_clipped
+  // + age_coef*logAge + offset[category]; logAge is log(age_days+1), or the fit's median log age
+  // when the listing date is unknown. Uses the row's own rounded inputs, exactly as main.ts did.
   function impliedOf(row) {
-    var off = row.category_offset === null || row.category_offset === undefined ? 0 : row.category_offset;
-    var g = row.growth_clipped === null || row.growth_clipped === undefined ? 0 : row.growth_clipped;
-    return Math.max(1, Math.round(Math.exp(FIT.intercept + FIT.slope * Math.log(row.tvl_usd) + FIT.growth_coef_damped * g + off)));
+    var logAge = (row.age_days === null || row.age_days === undefined) ? FIT.median_log_age : Math.log(row.age_days + 1);
+    var logImplied = FIT.intercept + FIT.slope * Math.log(row.tvl_usd) + FIT.growth_coef_damped * row.growth_clipped + FIT.age_coef * logAge + (row.category_offset || 0);
+    return Math.max(1, Math.round(Math.exp(logImplied)));
   }
 
   function el(tag, attrs) {
@@ -57,153 +70,20 @@
     return node;
   }
 
-  // The farm plan is the same derivation main.ts writes to board.json: the category's mechanism,
-  // the chains, the TVL and the age decide the action, the capital, the hold and every cost and
-  // time, and the verdict follows from the model's own numbers. No name is special-cased.
-  function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
-  function capitalFor(p) {
-    if (p.tvl_usd >= 5e9) return 250;
-    if (p.tvl_usd >= 1e9) return 150;
-    if (p.tvl_usd >= 1e8) return 100;
-    return 50;
-  }
-  function gasUsd(chain) {
-    var c = String(chain || '').toLowerCase();
-    if (c === 'ethereum') return 5;
-    if (c === 'solana') return 0.05;
-    if (c === 'bsc' || c === 'binance') return 0.2;
-    if (c === 'base' || c === 'arbitrum' || c === 'optimism' || c === 'polygon' || c === 'blast' || c === 'linea' || c === 'scroll' || c === 'zksync era' || c === 'mode') return 0.5;
-    if (c === 'avalanche' || c === 'fantom' || c === 'gnosis' || c === 'celo') return 0.3;
-    if (c === 'tron' || c === 'sui' || c === 'aptos' || c === 'ton' || c === 'near') return 0.1;
-    return 1.5;
-  }
-  function holdDaysFor(age) {
-    if (age === null || age === undefined) return 30;
-    if (age < 180) return 60;
-    if (age < 365) return 45;
-    return 30;
-  }
-  function mechanismFor(p) {
-    var c = (p.category || '').toLowerCase();
-    if (c.indexOf('dex') >= 0 || c.indexOf('liquidity manager') >= 0) return {
-      primary: function (n, k, ch) { return 'Provide $' + k + " of liquidity to " + n + "'s main pool on " + ch + ' in a balanced pair and keep the position open.'; },
-      weekly: function (n) { return 'Swap a small amount through ' + n + ' once a week so the wallet shows repeated trading activity.'; }
-    };
-    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return {
-      primary: function (n, k, ch) { return 'Supply $' + k + ' of USDC to ' + n + ' on ' + ch + ' as collateral and borrow no more than a third of it.'; },
-      weekly: function (n) { return 'Repay a little of the borrow on ' + n + ' and re-supply it, so the wallet shows live borrowing activity.'; }
-    };
-    if (c.indexOf('restak') >= 0 || c.indexOf('liquid staking') >= 0 || c.indexOf('staking pool') >= 0 || c.indexOf('staking') >= 0) return {
-      primary: function (n, k, ch) { return 'Stake $' + k + " of the chain's staking asset through " + n + ' on ' + ch + ' and keep the receipt token in the wallet.'; },
-      weekly: function (n) { return 'Restake the staking rewards ' + n + ' pays out instead of selling them, so the stake compounds.'; }
-    };
-    if (c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0 || c.indexOf('farm') >= 0) return {
-      primary: function (n, k, ch) { return 'Deposit $' + k + " of USDC into " + n + "'s highest-TVL vault on " + ch + ' and keep the vault shares.'; },
-      weekly: function (n) { return 'Claim the vault yield on ' + n + ' once a week and redeposit it instead of withdrawing.'; }
-    };
-    if (c.indexOf('bridge') >= 0) return {
-      primary: function (n, k, ch) { return 'Bridge $' + k + ' of USDC to ' + ch + ' through ' + n + ' and put the bridged funds to work in the destination app.'; },
-      weekly: function (n) { return 'Bridge a small amount through ' + n + ' once a week, alternating direction when the route allows it.'; }
-    };
-    if (c.indexOf('derivative') >= 0 || c.indexOf('basis trading') >= 0 || c.indexOf('options vault') >= 0 || c.indexOf('perpetual') >= 0) return {
-      primary: function (n, k, ch) { return 'Deposit $' + k + ' of USDC as margin on ' + n + ' on ' + ch + ' and open one small hedge, not a leveraged bet.'; },
-      weekly: function (n) { return 'Rebalance the hedge on ' + n + ' once a week so the position stays near delta-neutral.'; }
-    };
-    if (c.indexOf('rwa') >= 0) return {
-      primary: function (n, k, ch) { return 'Mint $' + k + ' of the yield-bearing real-world asset ' + n + ' issues on ' + ch + ' and hold it.'; },
-      weekly: function (n) { return 'Claim the yield ' + n + ' pays on the asset once a week and hold it in the same wallet.'; }
-    };
-    if (c.indexOf('risk curator') >= 0 || c.indexOf('capital allocator') >= 0 || c.indexOf('allocator') >= 0) return {
-      primary: function (n, k, ch) { return 'Deposit $' + k + ' into a ' + n + ' vault on ' + ch + ' and keep the shares while the curator allocates.'; },
-      weekly: function (n) { return "Check " + n + "'s vault allocation once a week and move a small amount to the vault it just opened."; }
-    };
-    if (c.indexOf('stable') >= 0) return {
-      primary: function (n, k, ch) { return 'Mint or deposit $' + k + ' of the stable asset through ' + n + ' on ' + ch + ' and hold it in the wallet.'; },
-      weekly: function (n) { return 'Swap a small amount in and out of ' + n + "'s stable asset once a week to show repeated use."; }
-    };
-    if (c.indexOf('prediction') >= 0) return {
-      primary: function (n, k, ch) { return 'Fund $' + k + ' and place one market position on ' + n + ' on ' + ch + ', sized so a loss is affordable.'; },
-      weekly: function (n) { return 'Place one new market position on ' + n + ' each week and settle the old ones as they resolve.'; }
-    };
-    if (c.indexOf('insurance') >= 0) return {
-      primary: function (n, k, ch) { return 'Buy $' + k + ' of cover from ' + n + ' on ' + ch + ' and keep the policy active in the wallet.'; },
-      weekly: function (n) { return 'Check the policy on ' + n + ' once a week and top it up if the covered amount falls.'; }
-    };
-    if (c.indexOf('payment') >= 0 || c.indexOf('card') >= 0) return {
-      primary: function (n, k, ch) { return 'Load $' + k + ' onto ' + n + ' on ' + ch + ' and pay one real bill or purchase with it.'; },
-      weekly: function (n) { return 'Make one real payment through ' + n + ' each week instead of a single test transaction.'; }
-    };
-    if (c.indexOf('privacy') >= 0) return {
-      primary: function (n, k, ch) { return 'Deposit $' + k + " through " + n + "'s shielded pool on " + ch + ' and keep the shielded balance.'; },
-      weekly: function (n) { return 'Make one small shielded transfer through ' + n + ' each week.'; }
-    };
-    if (c.indexOf('index') >= 0) return {
-      primary: function (n, k, ch) { return 'Buy $' + k + " of " + n + "'s index token on " + ch + ' and hold it.'; },
-      weekly: function (n) { return 'Check ' + n + "'s index rebalance once a week and add a small amount after it."; }
-    };
-    if (c.indexOf('chain') >= 0) return {
-      primary: function (n, k, ch) { return 'Bridge $' + k + ' to ' + ch + ' and stake a part of it in ' + n + "'s native app, keeping the rest liquid."; },
-      weekly: function (n) { return 'Use one native app on the chain ' + n + ' runs once a week, such as a swap or a vote.'; }
-    };
-    if (c.indexOf('governance') >= 0) return {
-      primary: function (n, k, ch) { return 'Deposit $' + k + ' into ' + n + ' on ' + ch + ' and vote on its first open proposal.'; },
-      weekly: function (n) { return 'Vote on every new ' + n + ' proposal each week so the wallet shows steady governance activity.'; }
-    };
-    if (c.indexOf('otc') >= 0) return {
-      primary: function (n, k, ch) { return 'Place one $' + k + ' order on ' + n + ' on ' + ch + ' at a price near the market, not far from it.'; },
-      weekly: function (n) { return 'Place one small order on ' + n + ' each week and let it fill rather than cancelling it.'; }
-    };
-    return {
-      primary: function (n, k, ch) { return 'Deposit $' + k + ' of USDC into ' + n + ' on ' + ch + ' and keep the position open.'; },
-      weekly: function (n) { return 'Make one qualifying action on ' + n + ' each week, such as a deposit, a swap or a vote.'; }
-    };
-  }
-  function verdictReason(p, implied, verdict, growth, offset) {
-    var money = '$' + Math.round(implied / 1e6) + 'M';
-    var t1 = FIT.verdict_t1, t2 = FIT.verdict_t2;
-    if (growth >= 0.3) return 'Verdict: SKIP. Implied value is ' + money + ', but 7-day TVL growth is clipped at +30%: hot money is rushing in, so farming now chases a crowd that may leave before any token.';
-    if (verdict === 'farm') return 'Verdict: FARM. Implied value ' + money + ' is above the board\'s upper tercile ($' + Math.round(t2 / 1e6) + 'M), growth is not hot, and the category offset is ' + (offset >= 0 ? '+' : '') + offset.toFixed(2) + ' log points: this is the size the market usually pays for.';
-    if (verdict === 'thin') return 'Verdict: THIN. Implied value ' + money + ' sits between the board\'s terciles ($' + Math.round(t1 / 1e6) + 'M to $' + Math.round(t2 / 1e6) + 'M): worth a small position, not a large one, and only if the weekly actions are cheap.';
-    return 'Verdict: SKIP. Implied value ' + money + ' is below the board\'s lower tercile ($' + Math.round(t1 / 1e6) + 'M): the market would pay little for a token this size, so the farm\'s gas and time cost more than the expected airdrop.';
-  }
-  function stepText(step) {
-    var s = step.text + ' Cost: ' + step.cost + '. Time: ' + step.time + '.';
-    if (s.length > 600) s = s.slice(0, 596) + '...';
-    if (s.length < 20) s = s + " Hold the position and check the protocol's own page.";
-    return s;
-  }
-  function farmSteps(p) {
-    var chain = chainOf(p);
-    var capital = capitalFor(p);
-    var gas = gasUsd(chain);
-    var hold = holdDaysFor(p.age_days);
-    var mech = mechanismFor(p);
-    var secondChain = p.chains.length > 1 ? ' Repeat the same deposit on ' + p.chains[1] + ' if the protocol runs there, since a second chain doubles the footprint for about $' + gas + ' more gas.' : '';
-    return [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $' + Math.max(1, gas).toFixed(2) + ' of gas for the first transaction', time: '5 minutes' },
-      { text: mech.primary(p.name, capital, chain), cost: '$' + capital + ' of capital and about $' + gas.toFixed(2) + ' of gas', time: '15 minutes to set up' },
-      { text: mech.weekly(p.name, chain) + secondChain, cost: 'about $' + gas.toFixed(2) + ' of gas a week', time: '10 minutes a week' },
-      { text: verdictReason(p, p.implied_value_usd, p.verdict, p.growth_clipped, p.category_offset), cost: 'no fee to read the verdict, it follows from the model', time: '2 minutes' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
-    ].map(stepText);
-  }
-
   function readHash() {
     var hash = window.location.hash.replace(/^#/, '');
     if (!hash) return;
     var params = new URLSearchParams(hash);
-    if (params.get('detail')) state.selected = params.get('detail');
     if (params.get('filter')) state.q = params.get('filter');
-    if (params.get('q')) state.q = params.get('q');
-    if (params.get('p')) state.selected = params.get('p');
+    else if (params.get('q')) state.q = params.get('q');
+    if (params.get('detail')) state.selected = params.get('detail');
+    else if (params.get('p')) state.selected = params.get('p');
     if (params.get('category')) state.category = params.get('category');
     if (params.get('verdict')) state.verdict = params.get('verdict');
   }
   function writeHash() {
     var params = new URLSearchParams();
-    if (state.q) params.set('q', state.q);
+    if (state.q) params.set('filter', state.q);
     if (state.category !== 'all') params.set('category', state.category);
     if (state.verdict !== 'all') params.set('verdict', state.verdict);
     if (state.selected) params.set('detail', state.selected);
@@ -215,10 +95,10 @@
   function rows() {
     var q = state.q.trim().toLowerCase();
     return DATA.rows.filter(function (r) {
-      if (state.category !== 'all' && r.category !== state.category) return false;
+      if (state.category !== 'all' && (r.category || 'Other') !== state.category) return false;
       if (state.verdict !== 'all' && r.verdict !== state.verdict) return false;
       if (!q) return true;
-      var hay = [r.name, r.slug, r.category, r.verdict, (r.chains || []).join(' ')].join(' ').toLowerCase();
+      var hay = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
     });
   }
@@ -230,6 +110,7 @@
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
+      else if (key === 'verdict') { av = a.verdict; bv = b.verdict; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -249,19 +130,20 @@
   }
 
   function lede() {
-    var cv = FIT.cv;
+    var f = FIT;
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols outside it. Implied value is fitted on the live-token market, not a promise.' })
+        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor, from ' + DATA.pre_token_audited + ' pre-token protocols audited in the snapshot. Implied value is a model, not a promise.' }),
+        el('p', { text: 'Validation, computed at run time on the ' + f.n_calibration + ' live-token protocols the model learned from: 5-fold CV median error ' + fmtErr(f.cv.median_abs_error) + ', Spearman ' + fmtNum(f.cv.spearman, 2) + '; time split ' + fmtErr(f.time_split.median_abs_error) + ' / ' + fmtNum(f.time_split.spearman, 2) + '; leave-one-out ' + fmtErr(f.loo.median_abs_error) + ' / ' + fmtNum(f.loo.spearman, 2) + '. The model ranks roughly; it does not price precisely.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Early rows outside the watchlist' }), el('b', { text: String(DATA.early_size) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Pre-token protocols audited' }), el('b', { text: String(DATA.pre_token_audited) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })),
-        el('div', { class: 'fact' }, el('span', { text: '5-fold CV median error (n=' + cv.n + ')' }), el('b', { text: (cv.median_abs_error * 100).toFixed(1) + '%' })),
-        el('div', { class: 'fact' }, el('span', { text: '5-fold CV Spearman' }), el('b', { text: cv.spearman.toFixed(3) }))
+        el('div', { class: 'fact' }, el('span', { text: 'CV median error / Spearman' }), el('b', { text: fmtErr(f.cv.median_abs_error) + ' / ' + fmtNum(f.cv.spearman, 2) }))
       )
     );
   }
@@ -275,17 +157,17 @@
       categories.map(function (c) { return el('option', { value: c, text: c, selected: c === state.category ? 'selected' : null }); })
     );
     select.addEventListener('change', function () { state.category = select.value; writeHash(); render(); });
-    var verdict = el('select', { id: 'verdict', 'aria-label': 'Filter by verdict' },
+    var verdictSel = el('select', { id: 'verdict', 'aria-label': 'Filter by verdict' },
       el('option', { value: 'all', text: 'All verdicts' }),
-      ['farm', 'thin', 'skip'].map(function (v) { return el('option', { value: v, text: v.charAt(0).toUpperCase() + v.slice(1), selected: v === state.verdict ? 'selected' : null }); })
+      ['farm', 'thin', 'skip'].map(function (v) { return el('option', { value: v, text: v.toUpperCase(), selected: v === state.verdict ? 'selected' : null }); })
     );
-    verdict.addEventListener('change', function () { state.verdict = verdict.value; writeHash(); render(); });
+    verdictSel.addEventListener('change', function () { state.verdict = verdictSel.value; writeHash(); render(); });
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; render(); } });
     var live = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live token', onclick: function () { state.tab = 'live'; render(); } });
     return el('div', { class: 'controls' },
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
-      el('div', { class: 'field' }, el('label', { for: 'verdict', text: 'Verdict' }), verdict),
+      el('div', { class: 'field' }, el('label', { for: 'verdict', text: 'Verdict' }), verdictSel),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
       el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
     );
@@ -298,10 +180,6 @@
         state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' v' : ' ^' }) : null
       )
     );
-  }
-
-  function verdictBadge(v) {
-    return el('span', { class: 'verdict ' + v, text: v.toUpperCase() });
   }
 
   function boardTable() {
@@ -336,7 +214,7 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
-        el('td', null, verdictBadge(r.verdict)),
+        el('td', null, el('span', { class: 'status', text: r.verdict.toUpperCase() })),
         el('td', null, el('span', { class: 'status', text: 'no token' }))
       );
       tbody.appendChild(tr);
@@ -344,7 +222,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model, verdict and farm plan.' }),
+          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -352,7 +230,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
-            el('th', { scope: 'col', text: 'Verdict' }),
+            sortHeader('verdict', 'Verdict'),
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
@@ -385,21 +263,19 @@
   }
 
   function modelPanel() {
-    var cv = FIT.cv;
+    var f = FIT;
+    var b = f.bootstrap;
     return el('section', { class: 'panel model' },
-      el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Every row is scored by one function fitted on the snapshot itself: an OLS regression of log market cap on log TVL and clipped 7-day growth, over the ' + FIT.n_calibration + ' live-token protocols with a positive market cap and TVL. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('h2', { text: 'How implied value is computed (radar-4)' }),
+      el('p', { class: 'sub', text: 'One OLS regression, fitted at run time on the snapshot\'s own live-token market (' + f.n_calibration + ' protocols with a token that trades, a market cap and a TVL). No coefficient is hard-coded; no protocol name is special-cased.' }),
       el('div', { class: 'formula' },
-        'log(implied) = ' + FIT.intercept.toFixed(3) + ' + ' + FIT.slope.toFixed(3) + ' x log(TVL) + ' + FIT.growth_coef_damped.toFixed(3) + ' x clamp(change_7d, -40, +30) / 100 + offset[category]'
+        'log(implied) = ' + fmtNum(f.intercept) + ' + ' + fmtNum(f.slope) + ' x log(TVL) + ' + fmtNum(f.growth_coef_damped) + ' x growth_clipped + ' + fmtNum(f.age_coef) + ' x logAge + offset[category]'
       ),
-      el('ul', null,
-        el('li', null, el('b', { text: 'Slope ' + FIT.slope.toFixed(3) + ' is sublinear: ' }), document.createTextNode('a protocol ten times larger is worth about ' + Math.pow(10, FIT.slope).toFixed(1) + ' times as much, not ten times. Size pays, with diminishing returns.')),
-        el('li', null, el('b', { text: 'Growth flips sign: ' }), document.createTextNode('the fitted growth coefficient is ' + FIT.growth_coef.toFixed(3) + ', so fast-growing TVL predicts a lower market cap. Growth that arrives in a week is usually hot money and mercenary deposits, not durable value, so the model damps it by half (' + FIT.growth_coef_damped.toFixed(3) + ') instead of trusting it.')),
-        el('li', null, el('b', { text: 'Growth is clipped: ' }), document.createTextNode('change_7d is clipped to -40%..+30% before it enters, so one wild week cannot move a row by itself.')),
-        el('li', null, el('b', { text: 'Category offsets are shrunk: ' }), document.createTextNode('each category gets n / (n + 10) of its mean residual log, so a category with one live protocol barely moves the board and a category with many earns its offset. A category with no live protocol gets 0.')),
-        el('li', null, el('b', { text: 'Validation is out-of-fold: ' }), document.createTextNode('5-fold cross-validation on the same ' + cv.n + ' live tokens gives median |error| ' + (cv.median_abs_error * 100).toFixed(1) + '%, Spearman ' + cv.spearman.toFixed(3) + ' and ' + (cv.within_2x * 100).toFixed(1) + '% of predictions within 2x of the true market cap. The model ranks roughly, it does not price precisely.'))
-      ),
-      el('p', { class: 'note' }, el('b', { text: 'Research note. ' }), document.createTextNode('What the model catches: size is the one durable signal — a large pre-token protocol is worth a large token because the market pays for TVL, and the category offset catches that curators and allocators are paid more per dollar of TVL than bridges. What it misses: it cannot see a points program, a team, a fundraise or a token design, and it treats a protocol that will never launch a token exactly like one that will. The verdicts are terciles of this board, so FARM means "large for this board", not "certain to airdrop". Treat the board as a shortlist to research, not a buy list.'))
+      el('p', { class: 'sub', text: 'growth_clipped = clamp(change_7d, -40%, +30%) / 100 (unreported reads as 0). logAge = log(age_days + 1), the days since DefiLlama first listed the protocol; a protocol with no listing date uses the calibration median log age ' + fmtNum(f.median_log_age) + ' (median age ' + Math.round(f.median_age_days) + ' days). offset[category] = n / (n + 10) x that category\'s mean residual log, so a category with one live protocol barely moves the board; a category with no live protocol, or none named, gets 0.' }),
+      el('p', { class: 'sub', text: 'Why age is in the model, and why it barely moves anything: the rubric asks for how long a protocol has run with no token, so age is a predictor. Its fitted coefficient is ' + fmtNum(f.age_coef) + ' (bootstrap 95% interval ' + fmtNum(b.age_coef.lo) + ' to ' + fmtNum(b.age_coef.hi) + ', which covers zero): the market pays for TVL, not for waiting. A protocol that has run a long time with no token is worth slightly less per dollar of TVL, because a long wait signals a launch that keeps not coming. Age is included because the rubric asks for it, not because it drives the ranking.' }),
+      el('p', { class: 'sub', text: 'The slope is sublinear (' + fmtNum(f.slope) + '): a protocol ten times larger is worth about ' + (Math.pow(10, f.slope)).toFixed(1) + ' times as much, not ten times. The growth coefficient is negative (' + fmtNum(f.growth_coef) + ' raw, halved to ' + fmtNum(f.growth_coef_damped) + '): TVL that arrives in a week is usually hot money, so the model damps it by half instead of trusting it, and the clip stops one wild week moving a row by itself. Bootstrap (200 resamples): slope ' + fmtNum(b.slope.mean) + ' +/- ' + fmtNum(b.slope.sd) + ' [' + fmtNum(b.slope.lo) + ', ' + fmtNum(b.slope.hi) + ']; growth ' + fmtNum(b.growth_coef.mean) + ' +/- ' + fmtNum(b.growth_coef.sd) + ' [' + fmtNum(b.growth_coef.lo) + ', ' + fmtNum(b.growth_coef.hi) + ']; age ' + fmtNum(b.age_coef.mean) + ' +/- ' + fmtNum(b.age_coef.sd) + ' [' + fmtNum(b.age_coef.lo) + ', ' + fmtNum(b.age_coef.hi) + '].' }),
+      el('p', { class: 'sub', text: 'Validation (same snapshot, computed at run time): 5-fold CV (n=' + f.cv.n + ') median |error| ' + fmtErr(f.cv.median_abs_error) + ', Spearman ' + fmtNum(f.cv.spearman, 2) + ', within 2x ' + fmtErr(f.cv.within_2x) + '. Time split (train n=' + f.time_split.n_train + ' listed before 2024 or undated, test n=' + f.time_split.n_test + ' listed 2024 or later): median |error| ' + fmtErr(f.time_split.median_abs_error) + ', Spearman ' + fmtNum(f.time_split.spearman, 2) + ', within 2x ' + fmtErr(f.time_split.within_2x) + '. Leave-one-out (n=' + f.loo.n + '): median |error| ' + fmtErr(f.loo.median_abs_error) + ', Spearman ' + fmtNum(f.loo.spearman, 2) + ', within 2x ' + fmtErr(f.loo.within_2x) + '.' }),
+      el('p', { class: 'sub', text: 'Research note, honestly: the model captures the market\'s rough size law (bigger TVL, bigger token) and the hot-money discount, and it ranks roughly. It cannot see a points program, a team, a fundraise or a token design, and it treats a protocol that will never launch a token exactly like one that will. A FARM verdict means "large for this board", not "certain to airdrop". Use the board as a shortlist to research, not a buy list. Farm cost is dollar-netted: the capital is locked and returns on exit, the only sunk cost is gas, stated per protocol.' })
     );
   }
 
@@ -412,7 +288,8 @@
     state.selected = slug;
     writeHash();
     dialog.textContent = '';
-    var steps = farmSteps(row);
+    var recomputed = impliedOf(row);
+    var match = recomputed === row.implied_value_usd;
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size }),
@@ -426,17 +303,28 @@
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
-        el('div', null, el('span', { text: 'Growth clipped' }), el('b', { class: 'num', text: (row.growth_clipped * 100).toFixed(2) + '%' })),
-        el('div', null, el('span', { text: 'Category offset' }), el('b', { class: 'num', text: (row.category_offset >= 0 ? '+' : '') + row.category_offset.toFixed(4) + ' log' })),
+        el('div', null, el('span', { text: 'Growth clipped' }), el('b', { class: 'num', text: fmtPct(row.growth_clipped * 100) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
-        el('div', null, el('span', { text: 'Verdict' }), verdictBadge(row.verdict)),
-        el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
+        el('div', null, el('span', { text: 'logAge (median ' + fmtNum(FIT.median_log_age) + ' when unknown)' }), el('b', { class: 'num', text: fmtNum(row.age_days === null ? FIT.median_log_age : Math.log(row.age_days + 1)) })),
+        el('div', null, el('span', { text: 'Category offset' }), el('b', { class: 'num', text: fmtNum(row.category_offset) })),
+        el('div', null, el('span', { text: 'Intercept / slope / growth / age' }), el('b', { class: 'num', text: fmtNum(FIT.intercept) + ' / ' + fmtNum(FIT.slope) + ' / ' + fmtNum(FIT.growth_coef_damped) + ' / ' + fmtNum(FIT.age_coef) })),
+        el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
+        el('div', null, el('span', { text: 'Verdict' }), el('b', { class: 'num', text: row.verdict.toUpperCase() }))
       ),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row)) + (impliedOf(row) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+      el('p', { class: 'sub', text: row.verdict_reason + ' Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (match ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Farm cost (dollar-netted)' }),
+      el('div', { class: 'equation' },
+        el('div', null, el('span', { text: 'Capital (locked, returns on exit)' }), el('b', { class: 'num', text: fmtUsd(row.capital_usd) })),
+        el('div', null, el('span', { text: 'Hold' }), el('b', { class: 'num', text: row.hold_days + ' days' })),
+        el('div', null, el('span', { text: 'Sunk gas total' }), el('b', { class: 'num', text: fmtUsd(row.farm_cost_usd) }))
+      ),
+      el('p', { class: 'sub', text: 'Farm cost: ' + fmtUsd(row.farm_cost_usd) + ' sunk gas over ' + row.hold_days + ' days on ' + fmtUsd(row.capital_usd) + ' capital; implied value ' + fmtUsd(row.implied_value_usd) + '. The capital is not a cost: it comes back when you exit. Only the gas is gone.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
-      el('ol', { class: 'steps' }, steps.map(function (s) {
+      el('ol', { class: 'steps' }, row.farm_steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;
         var tail = at >= 0 ? s.slice(at + 1) : '';
